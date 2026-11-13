@@ -1,0 +1,2063 @@
+name: Build AntiCheat
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Установка JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Создание файлов проекта
+        run: |
+          mkdir -p src/main/java/anticheat src/main/resources
+          cat > pom.xml <<'__POM_EOF__'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>anticheat</groupId>
+            <artifactId>AntiCheat</artifactId>
+            <version>1.0.0</version>
+            <packaging>jar</packaging>
+
+            <properties>
+              <maven.compiler.source>17</maven.compiler.source>
+              <maven.compiler.target>17</maven.compiler.target>
+              <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+            </properties>
+
+            <repositories>
+              <repository>
+                <id>lanink</id>
+                <url>https://repo.lanink.cn/repository/maven-public/</url>
+                <snapshots>
+                  <enabled>true</enabled>
+                </snapshots>
+              </repository>
+            </repositories>
+
+            <dependencies>
+              <dependency>
+                <groupId>cn.nukkit</groupId>
+                <artifactId>Nukkit</artifactId>
+                <version>MOT-SNAPSHOT</version>
+                <scope>provided</scope>
+              </dependency>
+            </dependencies>
+
+            <build>
+              <finalName>AntiCheat</finalName>
+              <plugins>
+                <plugin>
+                  <groupId>org.apache.maven.plugins</groupId>
+                  <artifactId>maven-compiler-plugin</artifactId>
+                  <version>3.11.0</version>
+                  <configuration>
+                    <source>17</source>
+                    <target>17</target>
+                    <encoding>UTF-8</encoding>
+                  </configuration>
+                </plugin>
+              </plugins>
+            </build>
+          </project>
+          __POM_EOF__
+          cat > src/main/resources/plugin.yml <<'__PLUGIN_EOF__'
+          name: AntiCheat
+          main: anticheat.AntiCheat
+          version: 1.0.0
+          api: ["1.0.0"]
+          author: owner
+          description: Античит по очкам подозрения - репорты админам и кики
+          softdepend: [LuckPerms]
+          commands:
+            ac:
+              description: Управление античитом
+              usage: "/ac [info|reset|reload|mode]"
+          permissions:
+            anticheat.bypass:
+              description: Иммунитет к проверкам
+              default: op
+            anticheat.notify:
+              description: Видеть репорты античита
+              default: op
+            anticheat.admin:
+              description: Команды /ac reload, /ac mode, /ac reset
+              default: op
+          __PLUGIN_EOF__
+          cat > src/main/resources/config.yml <<'__CONFIG_EOF__'
+          # AntiCheat для Nukkit-MOT. Все тексты и пороги настраиваются здесь.
+          # Режим: soft (только репорты админам) или hard (репорты и кики).
+          mode: hard
+
+          thresholds:
+            report: 5                  # порог репорта (очки)
+            kick: 15                   # порог кика (очки)
+            single-kick: 25            # кик сразу, если одно нарушение дошло до такой суммы очков
+            min-violations-for-kick: 2 # сколько отдельных срабатываний нужно для кика по сумме очков
+            kick-window-seconds: 60    # за какое время считать срабатывания
+            decay-seconds: 10          # раз в сколько секунд снимается 1 очко
+            report-cooldown-seconds: 30 # не чаще раза в N секунд на игрока (в консоль пишется всегда)
+
+          ping:
+            soft-above: 300     # при таком пинге пороги очков умножаются
+            soft-multiplier: 1.5
+            skip-above: 600     # при таком пинге проверки движения пропускаются
+
+          tps-skip-below: 15     # при низком TPS проверки движения пропускаются
+          check-interval-ticks: 2 # как часто считаются проверки (1-5), меняется только после перезапуска
+
+          worlds: []             # пусто = все миры; иначе список названий миров
+
+          # Окна без проверок (в тиках)
+          windows:
+            teleport: 60
+            damage: 20
+            gamemode: 40
+            join: 60
+            fly-off: 60
+
+          # Команды, после которых проверки на время отключаются.
+          # checks: all, move (fly, speed, nofall, timer, noslow, scaffold) или имена проверок.
+          exempt-commands:
+            jump:
+              ticks: 100
+              checks: [fly, nofall]
+            speed:
+              ticks: 40
+              checks: [speed]
+              speed-flag: true
+            size:
+              ticks: 40
+              checks: [reach, killaura]
+            god:
+              ticks: 40
+              checks: [nofall]
+            fly:
+              ticks: 60
+              checks: [fly, nofall]
+            timefly:
+              ticks: 60
+              checks: [fly, nofall]
+            rtp:
+              ticks: 60
+              checks: [all]
+            home:
+              ticks: 60
+              checks: [all]
+            spawn:
+              ticks: 60
+              checks: [all]
+            tp:
+              ticks: 60
+              checks: [all]
+            mwtp:
+              ticks: 60
+              checks: [all]
+            vtp:
+              ticks: 60
+              checks: [all]
+            tpall:
+              ticks: 60
+              checks: [all]
+
+          # Группы LuckPerms, которые видят репорты (кроме права anticheat.notify)
+          notify-groups: [admin, moderator, curator]
+
+          messages:
+            report: "§e⚠ Игрока §f{player}§e возможно читер ({check})"
+            kick-reason: "Подозрение на читы"
+            notify-on: "§aОповещения античита включены"
+            notify-off: "§cОповещения античита выключены"
+            no-permission: "§cНет прав."
+            usage: "§eИспользование: /ac | /ac info <ник> | /ac reset <ник> | /ac reload | /ac mode <soft|hard>"
+            player-not-found: "§cИгрок не найден."
+            reloaded: "§aКонфиг AntiCheat перезагружен."
+            mode-set: "§aРежим AntiCheat: {mode}"
+            reset-done: "§aОчки игрока {player} сброшены."
+            info-head: "§eОчки игрока §f{player}§e: §f{total}"
+            info-line: "§7- {check}: §f{points}"
+
+          # Лесенка: сколько очков ВСЕГО набрано за нарушение на каждой ступени.
+          # Плагин начисляет разницу со ступенью ниже. thresholds-ticks: сколько тиков нарушения нужно для ступени.
+          checks:
+            fly:
+              enabled: true
+              title: "Fly"
+              ladder: [2, 5, 10, 17, 25]
+              thresholds-ticks: [1, 20, 40, 60, 80]
+              hover-delta: 0.05
+              max-rise: 1.8
+            speed:
+              enabled: true
+              title: "Speed"
+              ladder: [2, 5, 10, 17, 25]
+              thresholds-ticks: [10, 20, 40, 60, 80]
+              walk: 0.22
+              sprint: 0.28
+              margin: 1.3
+              ice-multiplier: 2.2
+            reach:
+              enabled: true
+              title: "Reach"
+              ladder: [1, 3, 6, 10, 15]
+              window-seconds: 10
+              base: 3.6
+              ping-above: 150
+              ping-bonus: 0.4
+            killaura:
+              enabled: true
+              title: "KillAura"
+              ladder: [3, 7, 12, 20]
+              window-seconds: 10
+              fov-degrees: 100
+              same-aim-hits: 5
+            autoclicker:
+              enabled: true
+              title: "AutoClicker"
+              ladder: [2, 5, 10, 15]
+              thresholds-ticks: [20, 40, 60, 80]
+              max-cps: 20
+              uniform-clicks: 15
+              min-std-ms: 5
+            nofall:
+              enabled: true
+              title: "NoFall"
+              ladder: [2, 5, 10, 15]
+              window-seconds: 60
+              min-fall: 4.5
+            nuker:
+              enabled: true
+              title: "Nuker"
+              ladder: [2, 5, 10, 15]
+              thresholds-ticks: [20, 40, 60, 80]
+              per-second: 8
+              min-break-seconds: 0.3
+              min-fraction: 0.4
+            scaffold:
+              enabled: true
+              title: "Scaffold"
+              ladder: [2, 5, 10, 15]
+              thresholds-ticks: [20, 40, 60, 80]
+              per-second: 6
+              max-pitch: 35
+            timer:
+              enabled: false
+              title: "Timer"
+              ladder: [2, 5, 10, 15]
+              thresholds-ticks: [60, 80, 100, 120]
+              max-packets: 25
+            noslow:
+              enabled: false
+              title: "NoSlow"
+              ladder: [2, 5, 10, 15]
+              window-seconds: 10
+              sneak-limit: 0.12
+              use-limit: 0.12
+            aimbot:
+              enabled: false
+              title: "Aimbot"
+              ladder: [2, 5, 10, 15]
+              window-seconds: 120
+              min-distance: 20
+              min-shots: 10
+              min-ratio: 0.9
+            autototem:
+              enabled: false
+              title: "AutoTotem"
+              ladder: [2, 5, 10, 15]
+              window-seconds: 120
+              max-ticks: 2
+          __CONFIG_EOF__
+          cat > src/main/java/anticheat/AntiCheat.java <<'__ANTICHEAT_EOF__'
+          package anticheat;
+
+          import cn.nukkit.Player;
+          import cn.nukkit.command.Command;
+          import cn.nukkit.command.CommandSender;
+          import cn.nukkit.plugin.PluginBase;
+          import cn.nukkit.scheduler.Task;
+          import cn.nukkit.utils.ConfigSection;
+
+          import java.io.File;
+          import java.nio.charset.StandardCharsets;
+          import java.nio.file.Files;
+          import java.util.ArrayList;
+          import java.util.Arrays;
+          import java.util.Collections;
+          import java.util.HashMap;
+          import java.util.HashSet;
+          import java.util.List;
+          import java.util.Map;
+          import java.util.Set;
+          import java.util.UUID;
+
+          /** AntiCheat для Nukkit-MOT: очки подозрения, репорты админам и кик. */
+          public class AntiCheat extends PluginBase {
+              private static AntiCheat instance;
+
+              public static AntiCheat get() {
+                  return instance;
+              }
+
+              static final Set<String> MOVE = new HashSet<>(Arrays.asList("fly", "speed", "nofall", "timer", "noslow", "scaffold"));
+
+              final Map<UUID, PlayerData> players = new HashMap<>();
+              final Set<UUID> muted = new HashSet<>();
+              private final Map<String, Double> numCache = new HashMap<>();
+              private final Map<String, Boolean> enCache = new HashMap<>();
+              private final Map<String, int[]> ladCache = new HashMap<>();
+              private final Map<String, int[]> thrCache = new HashMap<>();
+              private final Map<String, String> titleCache = new HashMap<>();
+              private final Set<String> disabled = new HashSet<>();
+
+              boolean hard;
+              String mode = "soft";
+              double reportAt, kickAt, singleKick, lagMulVal;
+              int minTriggers, reportCd, pingSoft, pingSkip;
+              long kickWindowMs;
+              float tpsSkip;
+              int interval = 2;
+              int winTp, winDmg, winGm, winJoin, winFlyOff;
+              final Set<String> worlds = new HashSet<>();
+              final List<String> notifyGroups = new ArrayList<>();
+              private Checks checks;
+
+              @Override
+              public void onEnable() {
+                  instance = this;
+                  saveDefaultConfig();
+                  loadCfg();
+                  interval = Math.max(1, Math.min(5, (int) cfgNum("check-interval-ticks", 2)));
+                  checks = new Checks(this);
+                  getServer().getPluginManager().registerEvents(new ACListener(this), this);
+                  getServer().getScheduler().scheduleRepeatingTask(this, new Task() {
+                      @Override
+                      public void onRun(int currentTick) {
+                          checks.run(AntiCheat.this.getServer().getTick());
+                      }
+                  }, interval);
+                  int decayTicks = Math.max(20, (int) cfgNum("thresholds.decay-seconds", 10) * 20);
+                  getServer().getScheduler().scheduleRepeatingTask(this, new Task() {
+                      @Override
+                      public void onRun(int currentTick) {
+                          decay();
+                      }
+                  }, decayTicks);
+                  getLogger().info("AntiCheat включён, режим: " + mode);
+              }
+
+              @Override
+              public void onDisable() {
+                  players.clear();
+                  muted.clear();
+                  instance = null;
+              }
+
+              // ---------------------------------------------------------------- конфиг
+
+              static double toNum(Object o, double def) {
+                  return o instanceof Number ? ((Number) o).doubleValue() : def;
+              }
+
+              static boolean toBool(Object o, boolean def) {
+                  return o instanceof Boolean ? (Boolean) o : def;
+              }
+
+              private static int[] toArr(List<Integer> l, int[] def) {
+                  if (l == null || l.isEmpty()) {
+                      return def;
+                  }
+                  int[] a = new int[l.size()];
+                  for (int i = 0; i < a.length; i++) {
+                      a[i] = l.get(i);
+                  }
+                  return a;
+              }
+
+              double cfgNum(String path, double def) {
+                  return toNum(getConfig().get(path), def);
+              }
+
+              void loadCfg() {
+                  numCache.clear();
+                  enCache.clear();
+                  ladCache.clear();
+                  thrCache.clear();
+                  titleCache.clear();
+                  disabled.clear();
+                  mode = getConfig().getString("mode", "soft").toLowerCase();
+                  hard = mode.equals("hard");
+                  reportAt = cfgNum("thresholds.report", 5);
+                  kickAt = cfgNum("thresholds.kick", 15);
+                  singleKick = cfgNum("thresholds.single-kick", 25);
+                  minTriggers = (int) cfgNum("thresholds.min-violations-for-kick", 2);
+                  kickWindowMs = (long) (cfgNum("thresholds.kick-window-seconds", 60) * 1000);
+                  reportCd = (int) cfgNum("thresholds.report-cooldown-seconds", 30);
+                  pingSoft = (int) cfgNum("ping.soft-above", 300);
+                  pingSkip = (int) cfgNum("ping.skip-above", 600);
+                  lagMulVal = cfgNum("ping.soft-multiplier", 1.5);
+                  tpsSkip = (float) cfgNum("tps-skip-below", 15);
+                  winTp = (int) cfgNum("windows.teleport", 60);
+                  winDmg = (int) cfgNum("windows.damage", 20);
+                  winGm = (int) cfgNum("windows.gamemode", 40);
+                  winJoin = (int) cfgNum("windows.join", 60);
+                  winFlyOff = (int) cfgNum("windows.fly-off", 60);
+                  worlds.clear();
+                  for (String w : getConfig().getStringList("worlds")) {
+                      worlds.add(w.toLowerCase());
+                  }
+                  notifyGroups.clear();
+                  notifyGroups.addAll(getConfig().getStringList("notify-groups"));
+              }
+
+              double num(String check, String key, double def) {
+                  String k = check + "." + key;
+                  Double v = numCache.get(k);
+                  if (v == null) {
+                      v = toNum(getConfig().get("checks." + check + "." + key), def);
+                      numCache.put(k, v);
+                  }
+                  return v;
+              }
+
+              boolean enabled(String check) {
+                  Boolean b = enCache.get(check);
+                  if (b == null) {
+                      b = toBool(getConfig().get("checks." + check + ".enabled"), true);
+                      enCache.put(check, b);
+                  }
+                  return b && !disabled.contains(check);
+              }
+
+              int[] ladder(String check) {
+                  int[] a = ladCache.get(check);
+                  if (a == null) {
+                      a = toArr(getConfig().getIntegerList("checks." + check + ".ladder"), new int[]{2, 5, 10, 15});
+                      ladCache.put(check, a);
+                  }
+                  return a;
+              }
+
+              int[] thresholds(String check) {
+                  int[] a = thrCache.get(check);
+                  if (a == null) {
+                      a = toArr(getConfig().getIntegerList("checks." + check + ".thresholds-ticks"), new int[]{20, 40, 60, 80, 100});
+                      thrCache.put(check, a);
+                  }
+                  return a;
+              }
+
+              String title(String check) {
+                  String t = titleCache.get(check);
+                  if (t == null) {
+                      t = getConfig().getString("checks." + check + ".title", check);
+                      titleCache.put(check, t);
+                  }
+                  return t;
+              }
+
+              String msg(String key, String def) {
+                  return getConfig().getString("messages." + key, def);
+              }
+
+              // ---------------------------------------------------------------- защита от ошибок API
+
+              boolean isDisabled(String check) {
+                  return disabled.contains(check);
+              }
+
+              /** Выполняет проверку; если API недоступно, проверка тихо отключается, в консоль идёт одна строка. */
+              void guard(String check, Runnable r) {
+                  if (disabled.contains(check)) {
+                      return;
+                  }
+                  try {
+                      r.run();
+                  } catch (Throwable t) {
+                      disabled.add(check);
+                      getLogger().warning("[AntiCheat] проверка " + check + " отключена, API недоступно: " + t);
+                  }
+              }
+
+              // ---------------------------------------------------------------- игроки и окна
+
+              int tick() {
+                  return getServer().getTick();
+              }
+
+              float tps() {
+                  return (float) Util.num(getServer(), "getTicksPerSecond", 20);
+              }
+
+              int ping(Player p) {
+                  return (int) Util.num(p, "getPing", 0);
+              }
+
+              double lagMul(Player p) {
+                  return ping(p) > pingSoft ? lagMulVal : 1.0;
+              }
+
+              boolean lagSkip(Player p, float tps) {
+                  return ping(p) > pingSkip || tps < tpsSkip;
+              }
+
+              boolean worldOk(Player p) {
+                  if (worlds.isEmpty()) {
+                      return true;
+                  }
+                  return p.getLevel() != null && worlds.contains(p.getLevel().getName().toLowerCase());
+              }
+
+              PlayerData data(Player p) {
+                  PlayerData d = players.get(p.getUniqueId());
+                  if (d == null) {
+                      d = new PlayerData(p.getUniqueId(), p.getName());
+                      d.joinTick = tick();
+                      d.pktStart = d.joinTick;
+                      players.put(p.getUniqueId(), d);
+                  }
+                  return d;
+              }
+
+              boolean bypass(Player p, PlayerData d, int tick) {
+                  if (tick - d.bypassTick >= 100) {
+                      d.bypass = p.hasPermission("anticheat.bypass");
+                      d.bypassTick = tick;
+                  }
+                  return d.bypass;
+              }
+
+              void window(PlayerData d, String key, int ticks) {
+                  int end = tick() + ticks;
+                  Integer old = d.windows.get(key);
+                  if (old == null || old < end) {
+                      d.windows.put(key, end);
+                  }
+              }
+
+              private boolean win(PlayerData d, String key, int tick) {
+                  Integer t = d.windows.get(key);
+                  return t != null && tick < t;
+              }
+
+              boolean exempt(PlayerData d, String check, int tick) {
+                  if (d.bypass || d.flags.contains("all") || d.flags.contains(check)) {
+                      return true;
+                  }
+                  boolean move = MOVE.contains(check);
+                  if (move && d.flags.contains("move")) {
+                      return true;
+                  }
+                  return win(d, "all", tick) || win(d, check, tick) || (move && win(d, "move", tick));
+              }
+
+              void click(PlayerData d, long now) {
+                  d.clicks.addLast(now);
+                  while (d.clicks.size() > 48) {
+                      d.clicks.pollFirst();
+                  }
+              }
+
+              /** Окно для команд из exempt-commands. */
+              void commandExempt(Player p, String cmd) {
+                  ConfigSection sec = getConfig().getSection("exempt-commands." + cmd);
+                  if (sec == null || sec.isEmpty()) {
+                      return;
+                  }
+                  PlayerData d = data(p);
+                  int ticks = (int) toNum(sec.get("ticks"), 60);
+                  List<String> list = sec.getStringList("checks");
+                  if (list == null || list.isEmpty()) {
+                      list = Collections.singletonList("move");
+                  }
+                  for (String c : list) {
+                      window(d, c.toLowerCase(), ticks);
+                  }
+                  if (toBool(sec.get("speed-flag"), false)) {
+                      d.speedCmd = true;
+                  }
+              }
+
+              // ---------------------------------------------------------------- очки
+
+              double total(PlayerData d) {
+                  double s = 0;
+                  for (double v : d.pts.values()) {
+                      s += v;
+                  }
+                  return s;
+              }
+
+              /** Лесенка по длительности: cond = нарушение идёт сейчас, dt = сколько тиков прошло с прошлого замера. */
+              void dur(Player p, PlayerData d, String check, boolean cond, int dt, String detail) {
+                  int[] s = d.dur.get(check);
+                  if (s == null) {
+                      s = new int[3];
+                      d.dur.put(check, s);
+                  }
+                  if (cond) {
+                      s[0] += dt;
+                      s[1] = 0;
+                      int[] thr = thresholds(check);
+                      while (s[2] < thr.length && s[0] >= thr[s[2]]) {
+                          s[2]++;
+                          flagStep(p, d, check, s[2], detail);
+                      }
+                  } else {
+                      s[1] += dt;
+                      if (s[1] >= 40) {
+                          s[0] = 0;
+                          s[2] = 0;
+                      }
+                  }
+              }
+
+              /** Лесенка по числу срабатываний в окне window-seconds. */
+              void count(Player p, PlayerData d, String check, String detail) {
+                  long now = System.currentTimeMillis();
+                  long[] e = d.ep.get(check);
+                  if (e == null) {
+                      e = new long[]{now, 0};
+                      d.ep.put(check, e);
+                  }
+                  long win = (long) (num(check, "window-seconds", 10) * 1000);
+                  if (now - e[0] > win) {
+                      e[0] = now;
+                      e[1] = 0;
+                  }
+                  e[1]++;
+                  flagStep(p, d, check, (int) e[1], detail);
+              }
+
+              /** Начисляет разницу очков со ступенью ниже и проверяет пороги репорта и кика. */
+              void flagStep(Player p, PlayerData d, String check, int step, String detail) {
+                  int[] lad = ladder(check);
+                  if (step < 1 || step > lad.length) {
+                      return;
+                  }
+                  int total = lad[step - 1];
+                  int award = total - (step > 1 ? lad[step - 2] : 0);
+                  if (award <= 0) {
+                      return;
+                  }
+                  double mul = lagMul(p);
+                  d.pts.merge(check, (double) award, Double::sum);
+                  long now = System.currentTimeMillis();
+                  d.triggers.addLast(now);
+                  while (!d.triggers.isEmpty() && now - d.triggers.peekFirst() > kickWindowMs) {
+                      d.triggers.pollFirst();
+                  }
+                  double sum = total(d);
+                  if (sum >= reportAt * mul) {
+                      report(p, d, check, detail, sum);
+                  }
+                  if (!hard) {
+                      return;
+                  }
+                  boolean single = total >= singleKick * mul;
+                  boolean multi = sum >= kickAt * mul && d.triggers.size() >= minTriggers;
+                  if (single || multi) {
+                      kick(p, d, title(check) + " (" + detail + "), очки " + Util.fmt(sum) + (single ? ", одно нарушение" : ""));
+                  }
+              }
+
+              private void report(Player p, PlayerData d, String check, String detail, double sum) {
+                  getLogger().info("[AntiCheat] " + p.getName() + ": " + title(check) + " (" + detail + "), очки " + Util.fmt(sum));
+                  long now = System.currentTimeMillis();
+                  if (now - d.lastReport < reportCd * 1000L) {
+                      return;
+                  }
+                  d.lastReport = now;
+                  String m = msg("report", "§e⚠ Игрока §f{player}§e возможно читер ({check})")
+                          .replace("{player}", p.getName())
+                          .replace("{check}", title(check));
+                  for (Player a : getServer().getOnlinePlayers().values()) {
+                      if (!muted.contains(a.getUniqueId()) && canNotify(a)) {
+                          a.sendMessage(m);
+                      }
+                  }
+              }
+
+              private void kick(Player p, PlayerData d, String why) {
+                  getLogger().warning("[AntiCheat] кик " + p.getName() + ": " + why);
+                  d.pts.clear();
+                  d.triggers.clear();
+                  d.dur.clear();
+                  d.ep.clear();
+                  if (p.isOnline()) {
+                      p.kick(msg("kick-reason", "Подозрение на читы"));
+                  }
+              }
+
+              boolean canNotify(Player a) {
+                  if (a.hasPermission("anticheat.notify")) {
+                      return true;
+                  }
+                  for (String g : notifyGroups) {
+                      if (inGroup(a, g)) {
+                          return true;
+                      }
+                  }
+                  return false;
+              }
+
+              /** Группа проверяется через LuckPerms API, если плагин установлен; иначе только через право group.<имя>. */
+              private boolean inGroup(Player a, String g) {
+                  if (a.hasPermission("group." + g)) {
+                      return true;
+                  }
+                  try {
+                      Class<?> lpc = Class.forName("net.luckperms.api.LuckPerms");
+                      Object lp = Class.forName("net.luckperms.api.LuckPermsProvider").getMethod("get").invoke(null);
+                      Object um = lpc.getMethod("getUserManager").invoke(lp);
+                      Object user = Class.forName("net.luckperms.api.model.user.UserManager")
+                              .getMethod("getUser", UUID.class).invoke(um, a.getUniqueId());
+                      if (user == null) {
+                          return false;
+                      }
+                      Object primary = Class.forName("net.luckperms.api.model.user.User").getMethod("getPrimaryGroup").invoke(user);
+                      return primary != null && primary.toString().equalsIgnoreCase(g);
+                  } catch (Throwable t) {
+                      return false;
+                  }
+              }
+
+              /** Затухание: минус 1 очко раз в decay-seconds (с проверки, где очков больше всего). */
+              private void decay() {
+                  for (PlayerData d : players.values()) {
+                      if (d.pts.isEmpty()) {
+                          continue;
+                      }
+                      String maxKey = null;
+                      double max = 0;
+                      for (Map.Entry<String, Double> en : d.pts.entrySet()) {
+                          if (en.getValue() > max) {
+                              max = en.getValue();
+                              maxKey = en.getKey();
+                          }
+                      }
+                      if (maxKey != null) {
+                          double nv = max - 1;
+                          if (nv <= 0.0001) {
+                              d.pts.remove(maxKey);
+                          } else {
+                              d.pts.put(maxKey, nv);
+                          }
+                      }
+                  }
+              }
+
+              // ---------------------------------------------------------------- команды
+
+              private void persistMode(String m) {
+                  try {
+                      getConfig().set("mode", m);
+                      File f = new File(getDataFolder(), "config.yml");
+                      List<String> lines = Files.readAllLines(f.toPath(), StandardCharsets.UTF_8);
+                      for (int i = 0; i < lines.size(); i++) {
+                          if (lines.get(i).matches("^mode:\\s*\\S+.*")) {
+                              lines.set(i, "mode: " + m);
+                              break;
+                          }
+                      }
+                      Files.write(f.toPath(), lines, StandardCharsets.UTF_8);
+                  } catch (Throwable t) {
+                      getLogger().warning("[AntiCheat] не удалось записать режим в config.yml: " + t);
+                  }
+              }
+
+              @Override
+              public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+                  if (!command.getName().equalsIgnoreCase("ac")) {
+                      return false;
+                  }
+                  String sub = args.length > 0 ? args[0].toLowerCase() : "";
+                  String noPerm = msg("no-permission", "§cНет прав.");
+                  String usage = msg("usage", "§eИспользование: /ac | /ac info <ник> | /ac reset <ник> | /ac reload | /ac mode <soft|hard>");
+
+                  if (sub.isEmpty()) {
+                      if (!(sender instanceof Player)) {
+                          sender.sendMessage(usage);
+                          return true;
+                      }
+                      Player p = (Player) sender;
+                      if (!canNotify(p)) {
+                          sender.sendMessage(noPerm);
+                          return true;
+                      }
+                      if (muted.remove(p.getUniqueId())) {
+                          p.sendMessage(msg("notify-on", "§aОповещения античита включены"));
+                      } else {
+                          muted.add(p.getUniqueId());
+                          p.sendMessage(msg("notify-off", "§cОповещения античита выключены"));
+                      }
+                      return true;
+                  }
+
+                  boolean admin = sender.hasPermission("anticheat.admin");
+                  boolean notify = !(sender instanceof Player) || canNotify((Player) sender);
+
+                  if (sub.equals("info")) {
+                      if (!notify) {
+                          sender.sendMessage(noPerm);
+                          return true;
+                      }
+                      Player t = args.length > 1 ? getServer().getPlayer(args[1]) : null;
+                      if (t == null) {
+                          sender.sendMessage(msg("player-not-found", "§cИгрок не найден."));
+                          return true;
+                      }
+                      PlayerData d = data(t);
+                      sender.sendMessage(msg("info-head", "§eОчки игрока §f{player}§e: §f{total}")
+                              .replace("{player}", t.getName()).replace("{total}", Util.fmt(total(d))));
+                      for (Map.Entry<String, Double> en : d.pts.entrySet()) {
+                          sender.sendMessage(msg("info-line", "§7- {check}: §f{points}")
+                                  .replace("{check}", title(en.getKey())).replace("{points}", Util.fmt(en.getValue())));
+                      }
+                      return true;
+                  }
+                  if (sub.equals("reset")) {
+                      if (!admin) {
+                          sender.sendMessage(noPerm);
+                          return true;
+                      }
+                      Player t = args.length > 1 ? getServer().getPlayer(args[1]) : null;
+                      if (t == null) {
+                          sender.sendMessage(msg("player-not-found", "§cИгрок не найден."));
+                          return true;
+                      }
+                      PlayerData d = data(t);
+                      d.pts.clear();
+                      d.triggers.clear();
+                      d.dur.clear();
+                      d.ep.clear();
+                      sender.sendMessage(msg("reset-done", "§aОчки игрока {player} сброшены.").replace("{player}", t.getName()));
+                      return true;
+                  }
+                  if (sub.equals("reload")) {
+                      if (!admin) {
+                          sender.sendMessage(noPerm);
+                          return true;
+                      }
+                      reloadConfig();
+                      loadCfg();
+                      sender.sendMessage(msg("reloaded", "§aКонфиг AntiCheat перезагружен."));
+                      return true;
+                  }
+                  if (sub.equals("mode")) {
+                      if (!admin) {
+                          sender.sendMessage(noPerm);
+                          return true;
+                      }
+                      if (args.length < 2 || !(args[1].equalsIgnoreCase("soft") || args[1].equalsIgnoreCase("hard"))) {
+                          sender.sendMessage(usage);
+                          return true;
+                      }
+                      mode = args[1].toLowerCase();
+                      hard = mode.equals("hard");
+                      persistMode(mode);
+                      sender.sendMessage(msg("mode-set", "§aРежим AntiCheat: {mode}").replace("{mode}", mode));
+                      return true;
+                  }
+                  sender.sendMessage(usage);
+                  return true;
+              }
+          }
+          __ANTICHEAT_EOF__
+          cat > src/main/java/anticheat/AntiCheatAPI.java <<'__ANTICHEATAPI_EOF__'
+          package anticheat;
+
+          import cn.nukkit.Player;
+
+          /** Публичный API для других плагинов. Использовать необязательно. */
+          public final class AntiCheatAPI {
+              private AntiCheatAPI() {
+              }
+
+              /** Отключить все проверки для игрока на указанное число тиков. */
+              public static void exempt(Player p, int ticks) {
+                  exempt(p, "all", ticks);
+              }
+
+              /** Отключить одну проверку (fly, speed, reach и т.д.) или группу (all, move) на указанное число тиков. */
+              public static void exempt(Player p, String check, int ticks) {
+                  AntiCheat ac = AntiCheat.get();
+                  if (ac == null || p == null || check == null) {
+                      return;
+                  }
+                  ac.window(ac.data(p), check.toLowerCase(), ticks);
+              }
+
+              /** Долгое состояние: пока флаг включён, проверка (или all, move) пропускается. */
+              public static void setFlag(Player p, String flag, boolean on) {
+                  AntiCheat ac = AntiCheat.get();
+                  if (ac == null || p == null || flag == null) {
+                      return;
+                  }
+                  PlayerData d = ac.data(p);
+                  if (on) {
+                      d.flags.add(flag.toLowerCase());
+                  } else {
+                      d.flags.remove(flag.toLowerCase());
+                  }
+              }
+          }
+          __ANTICHEATAPI_EOF__
+          cat > src/main/java/anticheat/ACListener.java <<'__ACLISTENER_EOF__'
+          package anticheat;
+
+          import cn.nukkit.Player;
+          import cn.nukkit.block.Block;
+          import cn.nukkit.entity.Entity;
+          import cn.nukkit.event.EventHandler;
+          import cn.nukkit.event.EventPriority;
+          import cn.nukkit.event.Listener;
+          import cn.nukkit.event.block.BlockBreakEvent;
+          import cn.nukkit.event.block.BlockPlaceEvent;
+          import cn.nukkit.event.entity.EntityDamageByChildEntityEvent;
+          import cn.nukkit.event.entity.EntityDamageByEntityEvent;
+          import cn.nukkit.event.entity.EntityDamageEvent;
+          import cn.nukkit.event.entity.EntityShootBowEvent;
+          import cn.nukkit.event.player.PlayerAnimationEvent;
+          import cn.nukkit.event.player.PlayerCommandPreprocessEvent;
+          import cn.nukkit.event.player.PlayerGameModeChangeEvent;
+          import cn.nukkit.event.player.PlayerInteractEvent;
+          import cn.nukkit.event.player.PlayerJoinEvent;
+          import cn.nukkit.event.player.PlayerQuitEvent;
+          import cn.nukkit.event.player.PlayerRespawnEvent;
+          import cn.nukkit.event.player.PlayerTeleportEvent;
+          import cn.nukkit.event.server.DataPacketReceiveEvent;
+          import cn.nukkit.math.AxisAlignedBB;
+
+          import java.util.HashMap;
+          import java.util.Locale;
+          import java.util.Map;
+
+          /** События: окна исключений, бой (Reach, KillAura, Aimbot), блоки, клики, пакеты. */
+          public class ACListener implements Listener {
+              private final AntiCheat ac;
+              private Object lastAttack;
+              private final Map<Class<?>, Boolean> pktCache = new HashMap<>();
+
+              ACListener(AntiCheat ac) {
+                  this.ac = ac;
+              }
+
+              // ---------------------------------------------------------------- вход, выход, окна
+
+              @EventHandler
+              public void onJoin(PlayerJoinEvent e) {
+                  PlayerData d = ac.data(e.getPlayer());
+                  d.joinTick = ac.tick();
+                  d.pktStart = d.joinTick;
+                  d.hasLast = false;
+                  ac.window(d, "all", ac.winJoin);
+              }
+
+              @EventHandler
+              public void onQuit(PlayerQuitEvent e) {
+                  ac.players.remove(e.getPlayer().getUniqueId());
+                  ac.muted.remove(e.getPlayer().getUniqueId());
+              }
+
+              @EventHandler(priority = EventPriority.MONITOR)
+              public void onRespawn(PlayerRespawnEvent e) {
+                  PlayerData d = ac.data(e.getPlayer());
+                  d.hasLast = false;
+                  ac.window(d, "all", ac.winJoin);
+              }
+
+              @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+              public void onTeleport(PlayerTeleportEvent e) {
+                  PlayerData d = ac.data(e.getPlayer());
+                  d.hasLast = false;
+                  ac.window(d, "all", ac.winTp);
+              }
+
+              @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+              public void onGameMode(PlayerGameModeChangeEvent e) {
+                  PlayerData d = ac.data(e.getPlayer());
+                  ac.window(d, "all", ac.winGm);
+              }
+
+              @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+              public void onCommand(PlayerCommandPreprocessEvent e) {
+                  String m = e.getMessage();
+                  if (m == null) {
+                      return;
+                  }
+                  m = m.trim();
+                  if (!m.startsWith("/") || m.length() < 2) {
+                      return;
+                  }
+                  String c = m.substring(1).split("\\s+")[0].toLowerCase(Locale.ROOT);
+                  int i = c.indexOf(':');
+                  if (i >= 0) {
+                      c = c.substring(i + 1);
+                  }
+                  ac.commandExempt(e.getPlayer(), c);
+              }
+
+              // ---------------------------------------------------------------- урон
+
+              @EventHandler(priority = EventPriority.MONITOR)
+              public void onDamage(EntityDamageEvent e) {
+                  Entity v = e.getEntity();
+                  if (v instanceof Player) {
+                      Player p = (Player) v;
+                      PlayerData d = ac.data(p);
+                      int t = ac.tick();
+                      if (e.getCause() == EntityDamageEvent.DamageCause.FALL) {
+                          // фиксируем даже отменённое событие: его мог отменить другой плагин (/god)
+                          d.lastFallEvent = t;
+                      }
+                      if (!e.isCancelled()) {
+                          d.lastDmgTick = t;
+                          ac.window(d, "move", ac.winDmg);
+                          if (e.getCause().name().contains("EXPLOSION")) {
+                              ac.window(d, "fly", 80);
+                              ac.window(d, "speed", 60);
+                          }
+                      }
+                  }
+                  if (e instanceof EntityDamageByEntityEvent) {
+                      attack((EntityDamageByEntityEvent) e);
+                  }
+              }
+
+              // подстраховка на случай, если в этой сборке у подклассов свой список обработчиков
+              @EventHandler(priority = EventPriority.MONITOR)
+              public void onDamageByEntity(EntityDamageByEntityEvent e) {
+                  attack(e);
+              }
+
+              @EventHandler(priority = EventPriority.MONITOR)
+              public void onDamageByChild(EntityDamageByChildEntityEvent e) {
+                  attack(e);
+              }
+
+              private void attack(EntityDamageByEntityEvent e) {
+                  if (e == lastAttack) {
+                      return;
+                  }
+                  lastAttack = e;
+                  if (e.isCancelled() || !(e.getDamager() instanceof Player)) {
+                      return;
+                  }
+                  Player p = (Player) e.getDamager();
+                  Entity victim = e.getEntity();
+                  if (e instanceof EntityDamageByChildEntityEvent) {
+                      ac.guard("aimbot", () -> ranged(p, victim, (EntityDamageByChildEntityEvent) e));
+                      return;
+                  }
+                  if (e.getCause() != EntityDamageEvent.DamageCause.ENTITY_ATTACK) {
+                      return;
+                  }
+                  PlayerData d = ac.data(p);
+                  int tick = ac.tick();
+                  long now = System.currentTimeMillis();
+                  if (d.clicks.isEmpty() || now - d.clicks.peekLast() > 150) {
+                      ac.click(d, now);
+                  }
+                  if (ac.bypass(p, d, tick) || !ac.worldOk(p) || ac.ping(p) > ac.pingSkip) {
+                      return;
+                  }
+                  ac.guard("reach", () -> reach(p, d, victim, tick));
+                  ac.guard("killaura", () -> killAura(p, d, victim, tick));
+              }
+
+              private void reach(Player p, PlayerData d, Entity v, int tick) {
+                  if (!ac.enabled("reach") || p.isCreative() || ac.exempt(d, "reach", tick)) {
+                      return;
+                  }
+                  double ps = Util.num(p, "getScale", 1);
+                  double vs = Util.num(v, "getScale", 1);
+                  if (Math.abs(ps - 1) > 0.01 || Math.abs(vs - 1) > 0.01) {
+                      return;
+                  }
+                  AxisAlignedBB bb = v.getBoundingBox();
+                  double ex = p.getX(), ey = p.getY() + p.getEyeHeight(), ez = p.getZ();
+                  double cx = Math.max(bb.getMinX(), Math.min(ex, bb.getMaxX()));
+                  double cy = Math.max(bb.getMinY(), Math.min(ey, bb.getMaxY()));
+                  double cz = Math.max(bb.getMinZ(), Math.min(ez, bb.getMaxZ()));
+                  double dist = Math.sqrt((cx - ex) * (cx - ex) + (cy - ey) * (cy - ey) + (cz - ez) * (cz - ez));
+                  double lim = ac.num("reach", "base", 3.6);
+                  if (ac.ping(p) > ac.num("reach", "ping-above", 150)) {
+                      lim += ac.num("reach", "ping-bonus", 0.4);
+                  }
+                  if (dist > lim) {
+                      ac.count(p, d, "reach", "дистанция " + Util.fmt(dist) + " при лимите " + Util.fmt(lim));
+                  }
+              }
+
+              private void killAura(Player p, PlayerData d, Entity v, int tick) {
+                  if (!ac.enabled("killaura") || ac.exempt(d, "killaura", tick)) {
+                      return;
+                  }
+                  AxisAlignedBB bb = v.getBoundingBox();
+                  double ex = p.getX(), ey = p.getY() + p.getEyeHeight(), ez = p.getZ();
+                  double tx = (bb.getMinX() + bb.getMaxX()) / 2, ty = (bb.getMinY() + bb.getMaxY()) / 2,
+                          tz = (bb.getMinZ() + bb.getMaxZ()) / 2;
+                  boolean hit = false;
+                  String why = "";
+
+                  // 1) две разные цели в одном тике
+                  long vid = v.getId();
+                  if (d.atkTick == tick && d.atkTarget != vid && d.kaFlagTick != tick) {
+                      hit = true;
+                      why = "две цели за один тик";
+                      d.kaFlagTick = tick;
+                  }
+                  d.atkTick = tick;
+                  d.atkTarget = vid;
+
+                  // 2) удар по цели вне поля зрения
+                  double vx = tx - ex, vy = ty - ey, vz = tz - ez;
+                  double len = Math.sqrt(vx * vx + vy * vy + vz * vz);
+                  if (len > 1.5) {
+                      double yaw = Math.toRadians(p.getYaw()), pit = Math.toRadians(p.getPitch());
+                      double lx = -Math.sin(yaw) * Math.cos(pit), ly = -Math.sin(pit), lz = Math.cos(yaw) * Math.cos(pit);
+                      double dot = (vx * lx + vy * ly + vz * lz) / len;
+                      double ang = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, dot))));
+                      if (ang > ac.num("killaura", "fov-degrees", 100)) {
+                          hit = true;
+                          why = "цель вне поля зрения (" + (int) ang + "°)";
+                      }
+                  }
+
+                  // 3) серия ударов по движущемуся игроку без изменения yaw и pitch
+                  if (v instanceof Player) {
+                      boolean moved = Math.abs(tx - d.ltx) + Math.abs(ty - d.lty) + Math.abs(tz - d.ltz) > 0.1;
+                      if (tick - d.lastAtkAt <= 40 && Math.abs(p.getYaw() - d.lastAtkYaw) < 0.01
+                              && Math.abs(p.getPitch() - d.lastAtkPitch) < 0.01 && moved) {
+                          d.sameAim++;
+                      } else {
+                          d.sameAim = 0;
+                      }
+                      if (d.sameAim >= (int) ac.num("killaura", "same-aim-hits", 5) - 1) {
+                          hit = true;
+                          why = "серия ударов без поворота камеры";
+                          d.sameAim = 0;
+                      }
+                  } else {
+                      d.sameAim = 0;
+                  }
+                  d.lastAtkYaw = (float) p.getYaw();
+                  d.lastAtkPitch = (float) p.getPitch();
+                  d.lastAtkAt = tick;
+                  d.ltx = tx;
+                  d.lty = ty;
+                  d.ltz = tz;
+
+                  if (hit) {
+                      ac.count(p, d, "killaura", why);
+                  }
+              }
+
+              // ---------------------------------------------------------------- снаряды (Aimbot)
+
+              @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+              public void onShoot(EntityShootBowEvent e) {
+                  if (!(e.getEntity() instanceof Player) || !ac.enabled("aimbot")) {
+                      return;
+                  }
+                  PlayerData d = ac.data((Player) e.getEntity());
+                  long now = System.currentTimeMillis();
+                  d.shots.addLast(now);
+                  while (!d.shots.isEmpty() && now - d.shots.peekFirst() > 120000) {
+                      d.shots.pollFirst();
+                  }
+              }
+
+              private void ranged(Player p, Entity victim, EntityDamageByChildEntityEvent e) {
+                  if (!ac.enabled("aimbot")) {
+                      return;
+                  }
+                  Entity child = e.getChild();
+                  if (child == null || !child.getClass().getSimpleName().contains("Arrow")) {
+                      return;
+                  }
+                  PlayerData d = ac.data(p);
+                  int tick = ac.tick();
+                  if (ac.bypass(p, d, tick) || ac.exempt(d, "aimbot", tick) || !ac.worldOk(p)) {
+                      return;
+                  }
+                  double dist = p.distance(victim);
+                  if (dist <= ac.num("aimbot", "min-distance", 20)) {
+                      return;
+                  }
+                  long now = System.currentTimeMillis();
+                  d.longHits.addLast(now);
+                  while (!d.longHits.isEmpty() && now - d.longHits.peekFirst() > 120000) {
+                      d.longHits.pollFirst();
+                  }
+                  while (!d.shots.isEmpty() && now - d.shots.peekFirst() > 120000) {
+                      d.shots.pollFirst();
+                  }
+                  int shots = d.shots.size();
+                  if (shots >= (int) ac.num("aimbot", "min-shots", 10)) {
+                      double ratio = d.longHits.size() / (double) shots;
+                      if (ratio > ac.num("aimbot", "min-ratio", 0.9)) {
+                          ac.count(p, d, "aimbot", "попаданий " + d.longHits.size() + " из " + shots + " выстрелов, дальность "
+                                  + Util.fmt(dist));
+                      }
+                  }
+              }
+
+              // ---------------------------------------------------------------- клики, блоки
+
+              @EventHandler(priority = EventPriority.MONITOR)
+              public void onAnimation(PlayerAnimationEvent e) {
+                  ac.click(ac.data(e.getPlayer()), System.currentTimeMillis());
+              }
+
+              private static String key(Block b) {
+                  return b.getFloorX() + ":" + b.getFloorY() + ":" + b.getFloorZ();
+              }
+
+              @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+              public void onInteract(PlayerInteractEvent e) {
+                  if (e.getAction() != PlayerInteractEvent.Action.LEFT_CLICK_BLOCK || e.getBlock() == null) {
+                      return;
+                  }
+                  PlayerData d = ac.data(e.getPlayer());
+                  d.startKey = key(e.getBlock());
+                  d.startTick = ac.tick();
+              }
+
+              @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+              public void onBreak(BlockBreakEvent e) {
+                  Player p = e.getPlayer();
+                  PlayerData d = ac.data(p);
+                  int t = ac.tick();
+                  d.breaks.addLast(t);
+                  while (d.breaks.size() > 64) {
+                      d.breaks.pollFirst();
+                  }
+                  Block b = e.getBlock();
+                  if (b != null && ac.enabled("nuker") && !p.isCreative() && d.startKey.equals(key(b)) && t - d.startTick < 400) {
+                      ac.guard("nuker", () -> {
+                          double bt = Util.breakTime(b, e.getItem(), p);
+                          double minSec = ac.num("nuker", "min-break-seconds", 0.3);
+                          if (bt > minSec && (t - d.startTick) < bt * 20 * ac.num("nuker", "min-fraction", 0.4)) {
+                              d.fastBreakTick = t;
+                          }
+                      });
+                  }
+                  d.startKey = "";
+              }
+
+              @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+              public void onPlace(BlockPlaceEvent e) {
+                  Player p = e.getPlayer();
+                  PlayerData d = ac.data(p);
+                  Block b = e.getBlock();
+                  if (b == null || d.lastHSpeed < 0.1 || p.getPitch() >= ac.num("scaffold", "max-pitch", 35)) {
+                      return;
+                  }
+                  if (b.getFloorY() != (int) Math.floor(p.getY()) - 1) {
+                      return;
+                  }
+                  if (Math.abs(b.getFloorX() + 0.5 - p.getX()) > 1.2 || Math.abs(b.getFloorZ() + 0.5 - p.getZ()) > 1.2) {
+                      return;
+                  }
+                  d.places.addLast(ac.tick());
+                  while (d.places.size() > 64) {
+                      d.places.pollFirst();
+                  }
+              }
+
+              // ---------------------------------------------------------------- пакеты (Timer)
+
+              @EventHandler(priority = EventPriority.MONITOR)
+              public void onPacket(DataPacketReceiveEvent e) {
+                  Player p = e.getPlayer();
+                  Object pk = e.getPacket();
+                  if (p == null || pk == null) {
+                      return;
+                  }
+                  Boolean isMove = pktCache.get(pk.getClass());
+                  if (isMove == null) {
+                      String n = pk.getClass().getSimpleName();
+                      isMove = n.equals("MovePlayerPacket") || n.equals("PlayerAuthInputPacket");
+                      pktCache.put(pk.getClass(), isMove);
+                  }
+                  if (!isMove) {
+                      return;
+                  }
+                  PlayerData d = ac.players.get(p.getUniqueId());
+                  if (d == null) {
+                      return;
+                  }
+                  String n = pk.getClass().getSimpleName();
+                  if (d.pktType == null) {
+                      d.pktType = n;
+                  }
+                  if (d.pktType.equals(n)) {
+                      d.pkts++;
+                  }
+              }
+          }
+          __ACLISTENER_EOF__
+          cat > src/main/java/anticheat/Checks.java <<'__CHECKS_EOF__'
+          package anticheat;
+
+          import cn.nukkit.Player;
+          import cn.nukkit.block.Block;
+          import cn.nukkit.item.Item;
+          import cn.nukkit.level.Level;
+          import cn.nukkit.math.Vector3;
+          import cn.nukkit.potion.Effect;
+
+          import java.util.ArrayDeque;
+
+          /** Проверки, которые считаются раз в несколько тиков (движение, клики, блоки, Timer, AutoTotem). */
+          public class Checks {
+              private final AntiCheat ac;
+
+              Checks(AntiCheat ac) {
+                  this.ac = ac;
+              }
+
+              /** Что вокруг игрока: жидкость, паутина, лестницы и т.д. */
+              static final class Env {
+                  boolean liquid, web, climb, sticky, bubble, berry, powder, ice, support;
+
+                  boolean special() {
+                      return liquid || web || climb || sticky || bubble || berry || powder;
+                  }
+              }
+
+              /** Общий контекст одного замера. */
+              static final class Ctx {
+                  int tick, dt;
+                  double x, y, z, dy;
+                  Env env;
+                  boolean ground, air, gm, allowFlight, glide, ride, lev, slowFall, jumpB, noFly, lag, sprint;
+                  double avg, scale;
+                  boolean avgOk;
+              }
+
+              private static void classify(Block b, Env e) {
+                  if (b == null || b.getId() == 0) {
+                      return;
+                  }
+                  String n = b.getName() == null ? "" : b.getName().toLowerCase();
+                  if (n.contains("water") || n.contains("lava")) {
+                      e.liquid = true;
+                  } else if (n.contains("web")) {
+                      e.web = true;
+                  } else if (n.contains("ladder") || n.contains("vine") || n.contains("scaffold")) {
+                      e.climb = true;
+                  } else if (n.contains("slime") || n.contains("honey") || n.contains("hay")) {
+                      e.sticky = true;
+                  } else if (n.contains("bubble column")) {
+                      e.bubble = true;
+                  } else if (n.contains("berry") || n.contains("berries")) {
+                      e.berry = true;
+                  } else if (n.contains("powder snow")) {
+                      e.powder = true;
+                  }
+                  if (n.contains("ice")) {
+                      e.ice = true;
+                  }
+              }
+
+              private Env env(Player p) {
+                  Env e = new Env();
+                  Level lv = p.getLevel();
+                  double x = p.getX(), y = p.getY(), z = p.getZ();
+                  int fx = (int) Math.floor(x), fy = (int) Math.floor(y), fz = (int) Math.floor(z);
+                  classify(lv.getBlock(new Vector3(fx, fy, fz)), e);
+                  classify(lv.getBlock(new Vector3(fx, fy + 1, fz)), e);
+                  classify(lv.getBlock(new Vector3(fx, fy - 1, fz)), e);
+                  double[] off = {0, 0.3, -0.3};
+                  double[] below = {0.1, 0.6};
+                  for (double ox : off) {
+                      for (double oz : off) {
+                          for (double by : below) {
+                              Block b = lv.getBlock(new Vector3(Math.floor(x + ox), Math.floor(y - by), Math.floor(z + oz)));
+                              if (b != null && b.getId() != 0 && !b.canPassThrough()) {
+                                  e.support = true;
+                              }
+                              classify(b, e);
+                          }
+                      }
+                  }
+                  return e;
+              }
+
+              void run(int tick) {
+                  float tps = ac.tps();
+                  for (Player p : ac.getServer().getOnlinePlayers().values()) {
+                      try {
+                          one(p, tick, tps);
+                      } catch (Throwable t) {
+                          ac.guard("замер", () -> {
+                              throw new RuntimeException(t);
+                          });
+                      }
+                  }
+              }
+
+              private void one(Player p, int tick, float tps) {
+                  if (!p.isOnline() || p.getLevel() == null) {
+                      return;
+                  }
+                  PlayerData d = ac.data(p);
+                  int dt = ac.interval;
+                  if (ac.bypass(p, d, tick) || !ac.worldOk(p)) {
+                      d.hasLast = false;
+                      return;
+                  }
+                  String wn = p.getLevel().getName();
+                  double x = p.getX(), y = p.getY(), z = p.getZ();
+
+                  // первый замер, смена мира или долгий перерыв: только запоминаем позицию
+                  if (!d.hasLast || !wn.equals(d.lastWorld) || tick - d.lastSampleTick > dt * 3) {
+                      d.hasLast = true;
+                      d.lastWorld = wn;
+                      d.lx = x;
+                      d.ly = y;
+                      d.lz = z;
+                      d.lastSampleTick = tick;
+                      d.resetMove(y);
+                      return;
+                  }
+                  double dx = x - d.lx, dy = y - d.ly, dz = z - d.lz;
+                  double hdist = Math.sqrt(dx * dx + dz * dz);
+                  d.lx = x;
+                  d.ly = y;
+                  d.lz = z;
+                  d.lastSampleTick = tick;
+                  if (hdist > 8 || Math.abs(dy) > 12) {
+                      // неожиданный скачок позиции считаем телепортом
+                      ac.window(d, "all", ac.winTp);
+                      d.resetMove(y);
+                      return;
+                  }
+
+                  Ctx c = new Ctx();
+                  c.tick = tick;
+                  c.dt = dt;
+                  c.x = x;
+                  c.y = y;
+                  c.z = z;
+                  c.dy = dy;
+                  c.lag = ac.lagSkip(p, tps);
+                  c.sprint = p.isSprinting();
+
+                  double hs = hdist / dt;
+                  d.lastHSpeed = hs;
+                  d.speedRing[d.speedIdx] = hs;
+                  d.speedIdx = (d.speedIdx + 1) % 8;
+                  if (d.speedCnt < 8) {
+                      d.speedCnt++;
+                  }
+                  d.hy[d.hIdx] = y;
+                  d.ht[d.hIdx] = tick;
+                  d.hIdx = (d.hIdx + 1) % 16;
+
+                  c.env = env(p);
+                  c.ground = p.isOnGround() || c.env.support;
+                  c.air = !c.ground;
+                  c.gm = p.isCreative() || p.isSpectator();
+                  c.allowFlight = Util.allowFlight(p);
+                  c.glide = Util.gliding(p);
+                  c.ride = Util.riding(p);
+                  c.lev = p.hasEffect(24);
+                  c.slowFall = p.hasEffect(27);
+                  c.jumpB = p.hasEffect(8);
+
+                  if (d.wasAllowFlight && !c.allowFlight) {
+                      ac.window(d, "fly", ac.winFlyOff);
+                      ac.window(d, "nofall", ac.winFlyOff);
+                  }
+                  d.wasAllowFlight = c.allowFlight;
+
+                  if (c.env.special()) {
+                      d.envUntil = tick + ((c.env.sticky || c.env.bubble) ? 100 : 40);
+                  }
+                  if (c.env.ice) {
+                      d.iceUntil = tick + 30;
+                  }
+                  boolean envSkip = tick < d.envUntil;
+                  c.noFly = c.allowFlight || c.gm || c.glide || c.ride || c.lev || c.slowFall || c.jumpB || envSkip;
+
+                  if (c.air) {
+                      d.airTicks += dt;
+                  } else {
+                      d.airTicks = 0;
+                  }
+                  if (!c.air || c.noFly) {
+                      d.lastGroundY = y;
+                  }
+
+                  // средняя горизонтальная скорость за 10 тиков и масштаб скорости (/speed)
+                  int n = Math.max(1, Math.min(8, 10 / dt));
+                  c.avgOk = d.speedCnt >= n;
+                  if (c.avgOk) {
+                      double sum = 0;
+                      for (int i = 1; i <= n; i++) {
+                          sum += d.speedRing[((d.speedIdx - i) % 8 + 8) % 8];
+                      }
+                      c.avg = sum / n;
+                  }
+                  double eff = 1.0;
+                  Effect se = p.getEffect(1);
+                  if (se != null) {
+                      eff += 0.2 * (se.getAmplifier() + 1);
+                  }
+                  if (p.hasEffect(30)) {
+                      eff *= 1.5;
+                  }
+                  double slow = 1.0;
+                  Effect sl = p.getEffect(2);
+                  if (sl != null) {
+                      slow = Math.max(0.2, 1 - 0.15 * (sl.getAmplifier() + 1));
+                  }
+                  double ms = Util.num(p, "getMovementSpeed", -1);
+                  double expected = 0.1 * (c.sprint ? 1.3 : 1.0) * eff * slow;
+                  c.scale = ms > 0 ? Math.max(1.0, ms / expected) : 1.0;
+                  final double effF = eff;
+                  final boolean msKnown = ms > 0;
+
+                  // падение: отслеживаем самую высокую точку
+                  boolean fallTrack = c.air && !c.noFly;
+                  if (fallTrack) {
+                      if (!d.wasAir || y > d.peakY) {
+                          d.peakY = y;
+                      }
+                  }
+
+                  ac.guard("nofall", () -> noFall(p, d, c, fallTrack));
+                  ac.guard("fly", () -> fly(p, d, c));
+                  ac.guard("speed", () -> speed(p, d, c, effF, msKnown));
+                  ac.guard("noslow", () -> noSlow(p, d, c));
+                  ac.guard("scaffold", () -> scaffold(p, d, c));
+                  ac.guard("nuker", () -> nuker(p, d, c));
+                  ac.guard("autoclicker", () -> autoClicker(p, d, c));
+                  ac.guard("timer", () -> timer(p, d, c));
+                  ac.guard("autototem", () -> autoTotem(p, d, c));
+                  d.wasAir = fallTrack;
+              }
+
+              private double yAgo(PlayerData d, int tick, int ago) {
+                  int best = Integer.MIN_VALUE;
+                  double val = Double.NaN;
+                  for (int i = 0; i < 16; i++) {
+                      if (d.ht[i] <= tick - ago && d.ht[i] > best && d.ht[i] > tick - 40) {
+                          best = d.ht[i];
+                          val = d.hy[i];
+                      }
+                  }
+                  return val;
+              }
+
+              // ---------------------------------------------------------------- Fly
+
+              private void fly(Player p, PlayerData d, Ctx c) {
+                  boolean cond = false;
+                  String detail = "";
+                  if (ac.enabled("fly") && !c.lag && !c.noFly && !ac.exempt(d, "fly", c.tick) && c.air) {
+                      double ago = yAgo(d, c.tick, 10);
+                      boolean hover = d.airTicks >= 20 && !Double.isNaN(ago)
+                              && Math.abs(c.y - ago) < ac.num("fly", "hover-delta", 0.05);
+                      boolean rise = c.dy > 0.05 && (c.y - d.lastGroundY) > ac.num("fly", "max-rise", 1.8);
+                      cond = hover || rise;
+                      detail = hover ? "висит в воздухе " + (d.airTicks / 20) + " с" : "набор высоты без прыжка";
+                  }
+                  ac.dur(p, d, "fly", cond, c.dt, detail);
+              }
+
+              // ---------------------------------------------------------------- Speed
+
+              private void speed(Player p, PlayerData d, Ctx c, double eff, boolean msKnown) {
+                  boolean cond = false;
+                  String detail = "";
+                  boolean flyLike = c.allowFlight || c.gm || c.glide || c.ride;
+                  boolean unknownCmd = !msKnown && d.speedCmd;
+                  if (ac.enabled("speed") && c.avgOk && !c.lag && !flyLike && !unknownCmd
+                          && !ac.exempt(d, "speed", c.tick) && !Util.holds(p, "trident")) {
+                      double surf = c.tick < d.iceUntil ? ac.num("speed", "ice-multiplier", 2.2) : 1.0;
+                      double base = c.sprint ? ac.num("speed", "sprint", 0.28) : ac.num("speed", "walk", 0.22);
+                      double limit = base * eff * c.scale * surf * ac.num("speed", "margin", 1.3) * ac.lagMul(p);
+                      if (c.avg > limit) {
+                          cond = true;
+                          detail = "скорость " + String.format(java.util.Locale.US, "%.2f", c.avg) + " при лимите "
+                                  + String.format(java.util.Locale.US, "%.2f", limit);
+                      }
+                  }
+                  ac.dur(p, d, "speed", cond, c.dt, detail);
+              }
+
+              // ---------------------------------------------------------------- NoSlow
+
+              private void noSlow(Player p, PlayerData d, Ctx c) {
+                  if (!ac.enabled("noslow")) {
+                      return;
+                  }
+                  boolean sneak = p.isSneaking();
+                  boolean using = Util.bool(p, "isUsingItem", false);
+                  if (sneak || using) {
+                      d.slowTicks += c.dt;
+                  } else {
+                      d.slowTicks = 0;
+                      return;
+                  }
+                  if (d.slowTicks < 12 || !c.avgOk || !c.ground || c.env.ice || c.lag || c.allowFlight || c.gm || c.glide || c.ride
+                          || ac.exempt(d, "noslow", c.tick)) {
+                      return;
+                  }
+                  double lim = (sneak ? ac.num("noslow", "sneak-limit", 0.12) : ac.num("noslow", "use-limit", 0.12))
+                          * c.scale * ac.lagMul(p);
+                  if (c.avg > lim && c.tick - d.noSlowAt > 20) {
+                      d.noSlowAt = c.tick;
+                      ac.count(p, d, "noslow", (sneak ? "приседание" : "использование предмета") + ", скорость "
+                              + String.format(java.util.Locale.US, "%.2f", c.avg));
+                  }
+              }
+
+              // ---------------------------------------------------------------- NoFall
+
+              private void noFall(Player p, PlayerData d, Ctx c, boolean fallTrack) {
+                  if (!ac.enabled("nofall")) {
+                      return;
+                  }
+                  if (d.wasAir && c.ground) {
+                      double fall = d.peakY - c.y;
+                      boolean soft = c.env.special();
+                      if (fall > ac.num("nofall", "min-fall", 4.5) && !soft && !c.gm && !c.allowFlight && !c.glide && !c.ride
+                              && !c.lev && !c.slowFall && !p.hasEffect(11) && !c.lag && !Util.bool(p, "isInvulnerable", false)
+                              && !ac.exempt(d, "nofall", c.tick)) {
+                          d.landTick = c.tick;
+                          d.landFall = fall;
+                          d.landCheckAt = c.tick + 4;
+                      }
+                  }
+                  if (d.landCheckAt > 0 && c.tick >= d.landCheckAt) {
+                      d.landCheckAt = 0;
+                      if (d.lastFallEvent < d.landTick - 20 && !ac.exempt(d, "nofall", c.tick)) {
+                          ac.count(p, d, "nofall", "падение " + Util.fmt(d.landFall) + " бл. без урона");
+                      }
+                  }
+              }
+
+              // ---------------------------------------------------------------- Scaffold, Nuker
+
+              private static void prune(ArrayDeque<Integer> q, int minTick) {
+                  while (!q.isEmpty() && q.peekFirst() < minTick) {
+                      q.pollFirst();
+                  }
+              }
+
+              private void scaffold(Player p, PlayerData d, Ctx c) {
+                  prune(d.places, c.tick - 20);
+                  boolean cond = ac.enabled("scaffold") && !c.lag && !c.gm && !ac.exempt(d, "scaffold", c.tick)
+                          && d.places.size() >= (int) ac.num("scaffold", "per-second", 6);
+                  ac.dur(p, d, "scaffold", cond, c.dt, "блоки под ногами: " + d.places.size() + "/с");
+              }
+
+              private void nuker(Player p, PlayerData d, Ctx c) {
+                  prune(d.breaks, c.tick - 20);
+                  boolean many = d.breaks.size() > (int) ac.num("nuker", "per-second", 8);
+                  boolean fast = c.tick - d.fastBreakTick < 20;
+                  boolean cond = ac.enabled("nuker") && !c.gm && !ac.exempt(d, "nuker", c.tick) && (many || fast);
+                  ac.dur(p, d, "nuker", cond, c.dt, many ? "блоков за секунду: " + d.breaks.size() : "блок сломан слишком быстро");
+              }
+
+              // ---------------------------------------------------------------- AutoClicker
+
+              private void autoClicker(Player p, PlayerData d, Ctx c) {
+                  boolean cond = false;
+                  String detail = "";
+                  if (ac.enabled("autoclicker") && !ac.exempt(d, "autoclicker", c.tick) && !d.clicks.isEmpty()) {
+                      long now = System.currentTimeMillis();
+                      while (!d.clicks.isEmpty() && now - d.clicks.peekFirst() > 3000) {
+                          d.clicks.pollFirst();
+                      }
+                      int cps = 0;
+                      for (Long t : d.clicks) {
+                          if (now - t <= 1000) {
+                              cps++;
+                          }
+                      }
+                      if (cps > (int) ac.num("autoclicker", "max-cps", 20)) {
+                          cond = true;
+                          detail = "кликов в секунду: " + cps;
+                      } else {
+                          int need = (int) ac.num("autoclicker", "uniform-clicks", 15);
+                          Long[] arr = d.clicks.toArray(new Long[0]);
+                          int len = arr.length;
+                          if (len >= need && now - arr[len - 1] < 500) {
+                              double sum = 0;
+                              for (int i = len - need + 1; i < len; i++) {
+                                  sum += arr[i] - arr[i - 1];
+                              }
+                              double mean = sum / (need - 1);
+                              double var = 0;
+                              for (int i = len - need + 1; i < len; i++) {
+                                  double diff = (arr[i] - arr[i - 1]) - mean;
+                                  var += diff * diff;
+                              }
+                              double std = Math.sqrt(var / (need - 1));
+                              if (std < ac.num("autoclicker", "min-std-ms", 5) && mean < 300) {
+                                  cond = true;
+                                  detail = "одинаковые интервалы между кликами (откл. " + Util.fmt(std) + " мс)";
+                              }
+                          }
+                      }
+                  }
+                  ac.dur(p, d, "autoclicker", cond, c.dt, detail);
+              }
+
+              // ---------------------------------------------------------------- Timer
+
+              private void timer(Player p, PlayerData d, Ctx c) {
+                  if (!ac.enabled("timer")) {
+                      d.pkts = 0;
+                      d.pktStart = c.tick;
+                      return;
+                  }
+                  int elapsed = c.tick - d.pktStart;
+                  if (elapsed < 20) {
+                      return;
+                  }
+                  boolean skip = c.lag || ac.exempt(d, "timer", c.tick) || c.tick - d.joinTick < 200;
+                  double rate = d.pkts * 20.0 / Math.max(1, elapsed);
+                  boolean cond = !skip && rate > ac.num("timer", "max-packets", 25);
+                  d.pkts = 0;
+                  d.pktStart = c.tick;
+                  ac.dur(p, d, "timer", cond, elapsed, "пакетов движения в секунду: " + (int) rate);
+              }
+
+              // ---------------------------------------------------------------- AutoTotem
+
+              private int totemCount(Player p) {
+                  Object inv = Util.call(p, "getOffhandInventory");
+                  if (inv == null) {
+                      return 0;
+                  }
+                  Object it = Util.call(inv, "getItem", 0);
+                  if (it instanceof Item) {
+                      Item i = (Item) it;
+                      String n = i.getName();
+                      if (n != null && n.toLowerCase().contains("totem")) {
+                          return i.getCount();
+                      }
+                  }
+                  return 0;
+              }
+
+              private void autoTotem(Player p, PlayerData d, Ctx c) {
+                  if (!ac.enabled("autototem") || ac.exempt(d, "autototem", c.tick)) {
+                      return;
+                  }
+                  int cur = totemCount(p);
+                  if (d.prevOff > 0 && cur == 0 && c.tick - d.lastDmgTick <= 6) {
+                      d.popTick = c.tick;
+                  } else if (d.popTick > 0 && d.prevOff == 0 && cur > 0
+                          && c.tick - d.popTick <= Math.max((int) ac.num("autototem", "max-ticks", 2), c.dt)) {
+                      int took = c.tick - d.popTick;
+                      d.popTick = -10000;
+                      ac.count(p, d, "autototem", "тотем вернулся в руку за " + took + " т.");
+                  }
+                  d.prevOff = cur;
+              }
+          }
+          __CHECKS_EOF__
+          cat > src/main/java/anticheat/PlayerData.java <<'__PLAYERDATA_EOF__'
+          package anticheat;
+
+          import java.util.ArrayDeque;
+          import java.util.Arrays;
+          import java.util.HashMap;
+          import java.util.HashSet;
+          import java.util.Map;
+          import java.util.Set;
+          import java.util.UUID;
+
+          /** Всё состояние одного игрока. Создаётся при первом обращении, удаляется при выходе. */
+          public class PlayerData {
+              public final UUID id;
+              public final String name;
+
+              // очки подозрения по проверкам
+              public final Map<String, Double> pts = new HashMap<>();
+              public final ArrayDeque<Long> triggers = new ArrayDeque<>();
+              public long lastReport;
+
+              // окна исключений: ключ (all, move или имя проверки) -> тик окончания
+              public final Map<String, Integer> windows = new HashMap<>();
+              public final Set<String> flags = new HashSet<>();
+
+              // лесенки: длительные проверки {плохих тиков, нормальных тиков, достигнутая ступень}
+              public final Map<String, int[]> dur = new HashMap<>();
+              // лесенки по числу срабатываний: {начало окна в мс, число срабатываний}
+              public final Map<String, long[]> ep = new HashMap<>();
+
+              public boolean bypass;
+              public int bypassTick = -10000;
+              public boolean speedCmd;
+              public int joinTick;
+
+              // движение
+              public boolean hasLast;
+              public String lastWorld = "";
+              public double lx, ly, lz;
+              public int lastSampleTick;
+              public final double[] speedRing = new double[8];
+              public int speedIdx, speedCnt;
+              public double lastHSpeed;
+              public final double[] hy = new double[16];
+              public final int[] ht = new int[16];
+              public int hIdx;
+              public double lastGroundY, peakY;
+              public boolean wasAir, wasAllowFlight;
+              public int airTicks, envUntil, iceUntil, slowTicks;
+
+              // NoFall
+              public int lastFallEvent = -10000, landTick = -10000, landCheckAt;
+              public double landFall;
+
+              // бой
+              public int atkTick = -1, kaFlagTick = -1, lastAtkAt = -10000, sameAim;
+              public long atkTarget = -1;
+              public float lastAtkYaw, lastAtkPitch;
+              public double ltx, lty, ltz;
+
+              // клики и блоки
+              public final ArrayDeque<Long> clicks = new ArrayDeque<>();
+              public final ArrayDeque<Integer> places = new ArrayDeque<>();
+              public final ArrayDeque<Integer> breaks = new ArrayDeque<>();
+              public int fastBreakTick = -10000, startTick = -10000;
+              public String startKey = "";
+
+              // Timer
+              public String pktType;
+              public int pkts, pktStart;
+
+              // NoSlow, Aimbot, AutoTotem
+              public int noSlowAt = -10000;
+              public final ArrayDeque<Long> shots = new ArrayDeque<>();
+              public final ArrayDeque<Long> longHits = new ArrayDeque<>();
+              public int prevOff, popTick = -10000, lastDmgTick = -10000;
+
+              public PlayerData(UUID id, String name) {
+                  this.id = id;
+                  this.name = name;
+                  Arrays.fill(ht, -100000);
+              }
+
+              /** Сброс истории движения (телепорт, смена мира, первый замер). */
+              public void resetMove(double y) {
+                  speedCnt = 0;
+                  speedIdx = 0;
+                  hIdx = 0;
+                  Arrays.fill(ht, -100000);
+                  lastGroundY = y;
+                  peakY = y;
+                  wasAir = false;
+                  airTicks = 0;
+                  landCheckAt = 0;
+                  slowTicks = 0;
+              }
+          }
+          __PLAYERDATA_EOF__
+          cat > src/main/java/anticheat/Util.java <<'__UTIL_EOF__'
+          package anticheat;
+
+          import cn.nukkit.Player;
+          import cn.nukkit.item.Item;
+
+          import java.lang.reflect.Method;
+          import java.util.HashMap;
+          import java.util.Locale;
+          import java.util.Map;
+
+          /** Вспомогательные методы. Всё, в чём API Nukkit-MOT может отличаться, вызывается через reflection. */
+          public final class Util {
+              private Util() {
+              }
+
+              private static final Map<String, Method> CACHE = new HashMap<>();
+
+              private static Method find(Class<?> c, String name, int n) {
+                  String key = c.getName() + "#" + name + "#" + n;
+                  if (CACHE.containsKey(key)) {
+                      return CACHE.get(key);
+                  }
+                  Method found = null;
+                  for (Method m : c.getMethods()) {
+                      if (m.getName().equals(name) && m.getParameterCount() == n) {
+                          found = m;
+                          break;
+                      }
+                  }
+                  if (found != null) {
+                      try {
+                          found.setAccessible(true);
+                      } catch (Throwable ignored) {
+                          // не критично
+                      }
+                  }
+                  CACHE.put(key, found);
+                  return found;
+              }
+
+              /** Вызов метода по имени. Если метода нет или он упал, вернёт null. */
+              public static Object call(Object o, String name, Object... args) {
+                  if (o == null) {
+                      return null;
+                  }
+                  try {
+                      Method m = find(o.getClass(), name, args.length);
+                      if (m == null) {
+                          return null;
+                      }
+                      return m.invoke(o, args);
+                  } catch (Throwable t) {
+                      return null;
+                  }
+              }
+
+              public static double num(Object o, String name, double def) {
+                  Object r = call(o, name);
+                  return r instanceof Number ? ((Number) r).doubleValue() : def;
+              }
+
+              public static boolean bool(Object o, String name, boolean def) {
+                  Object r = call(o, name);
+                  return r instanceof Boolean ? (Boolean) r : def;
+              }
+
+              public static String fmt(double v) {
+                  return String.format(Locale.US, "%.1f", v);
+              }
+
+              /** Разрешён ли полёт (/fly, /timefly, креатив). */
+              public static boolean allowFlight(Player p) {
+                  Object r = call(p, "getAllowFlight");
+                  if (r instanceof Boolean) {
+                      return (Boolean) r;
+                  }
+                  Object as = call(p, "getAdventureSettings");
+                  if (as != null) {
+                      try {
+                          Class<?> t = Class.forName("cn.nukkit.AdventureSettings$Type");
+                          Object type = t.getField("ALLOW_FLIGHT").get(null);
+                          Object v = as.getClass().getMethod("get", t).invoke(as, type);
+                          if (v instanceof Boolean) {
+                              return (Boolean) v;
+                          }
+                      } catch (Throwable ignored) {
+                          // API недоступно
+                      }
+                  }
+                  return false;
+              }
+
+              public static boolean elytraWorn(Player p) {
+                  try {
+                      Item c = p.getInventory().getChestplate();
+                      return c != null && c.getName() != null && c.getName().toLowerCase().contains("elytra");
+                  } catch (Throwable t) {
+                      return false;
+                  }
+              }
+
+              /** Планирует ли игрок на элитрах. Если метода нет, считаем по надетым элитрам. */
+              public static boolean gliding(Player p) {
+                  Object r = call(p, "isGliding");
+                  if (r instanceof Boolean) {
+                      return (Boolean) r;
+                  }
+                  return elytraWorn(p);
+              }
+
+              /** Едет ли игрок на существе или в транспорте. */
+              public static boolean riding(Player p) {
+                  if (call(p, "getRiding") != null) {
+                      return true;
+                  }
+                  Object r = call(p, "isRiding");
+                  if (r instanceof Boolean && (Boolean) r) {
+                      return true;
+                  }
+                  try {
+                      return p.getClass().getField("riding").get(p) != null;
+                  } catch (Throwable t) {
+                      return false;
+                  }
+              }
+
+              /** Держит ли игрок в руке предмет с таким словом в названии (трезубец и т.п.). */
+              public static boolean holds(Player p, String word) {
+                  try {
+                      Item h = p.getInventory().getItemInHand();
+                      return h != null && h.getName() != null && h.getName().toLowerCase().contains(word);
+                  } catch (Throwable t) {
+                      return false;
+                  }
+              }
+
+              /** Время ломания блока в секундах или -1, если API недоступно. */
+              public static double breakTime(Object block, Item item, Player p) {
+                  if (block == null || item == null) {
+                      return -1;
+                  }
+                  String[] names = {"calculateBreakTime", "getBreakTime"};
+                  for (String name : names) {
+                      for (Method m : block.getClass().getMethods()) {
+                          if (!m.getName().equals(name)) {
+                              continue;
+                          }
+                          Class<?>[] pt = m.getParameterTypes();
+                          try {
+                              if (pt.length == 2 && pt[0].isAssignableFrom(item.getClass()) && pt[1].isAssignableFrom(p.getClass())) {
+                                  return ((Number) m.invoke(block, item, p)).doubleValue();
+                              }
+                          } catch (Throwable ignored) {
+                              // пробуем другой вариант
+                          }
+                      }
+                  }
+                  for (String name : names) {
+                      for (Method m : block.getClass().getMethods()) {
+                          if (!m.getName().equals(name)) {
+                              continue;
+                          }
+                          Class<?>[] pt = m.getParameterTypes();
+                          try {
+                              if (pt.length == 1 && pt[0].isAssignableFrom(item.getClass())) {
+                                  return ((Number) m.invoke(block, item)).doubleValue();
+                              }
+                          } catch (Throwable ignored) {
+                              // пробуем другой вариант
+                          }
+                      }
+                  }
+                  return -1;
+              }
+          }
+          __UTIL_EOF__
+
+      - name: Сборка
+        run: mvn -B clean package
+
+      - name: Загрузка артефакта
+        uses: actions/upload-artifact@v4
+        with:
+          name: AntiCheat-jar
+          path: target/AntiCheat.jar
+          if-no-files-found: error
